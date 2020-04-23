@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/pkg/labels"
@@ -996,6 +995,15 @@ func stopAll(ds []*Distributor, r *ring.Ring) {
 	r.StopAsync()
 }
 
+func stopAll(ds []*Distributor, r *ring.Ring) {
+	for _, d := range ds {
+		services.StopAndAwaitTerminated(context.Background(), d) //nolint:errcheck
+	}
+
+	// Mock consul doesn't stop quickly, so don't wait.
+	r.StopAsync()
+}
+
 func makeWriteRequest(startTimestampMs int64, samples int, metadata int) *client.WriteRequest {
 	request := &client.WriteRequest{}
 	for i := 0; i < samples; i++ {
@@ -1420,7 +1428,7 @@ func TestDistributorValidation(t *testing.T) {
 			})
 			defer stopAll(ds, r)
 
-			_, err := ds[0].Push(ctx, client.ToWriteRequest(tc.labels, tc.samples, tc.metadata, client.API))
+			_, err := ds[0].Push(ctx, client.ToWriteRequest(tc.labels, tc.samples, client.API))
 			require.Equal(t, tc.err, err)
 		})
 	}
