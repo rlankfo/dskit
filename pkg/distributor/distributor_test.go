@@ -1204,9 +1204,9 @@ func makeWriteRequest(startTimestampMs int64, samples int, metadata int) *client
 
 	for i := 0; i < metadata; i++ {
 		m := &client.MetricMetadata{
-			MetricName: fmt.Sprintf("metric_%d", i),
-			Type:       client.COUNTER,
-			Help:       fmt.Sprintf("a help for metric_%d", i),
+			MetricFamilyName: fmt.Sprintf("metric_%d", i),
+			Type:             client.COUNTER,
+			Help:             fmt.Sprintf("a help for metric_%d", i),
 		}
 		request.Metadata = append(request.Metadata, m)
 	}
@@ -1347,7 +1347,7 @@ func (i *mockIngester) Push(ctx context.Context, req *client.WriteRequest, opts 
 	}
 
 	for _, m := range req.Metadata {
-		hash := shardByMetricName(orgid, m.MetricName)
+		hash := shardByMetricName(orgid, m.MetricFamilyName)
 		set, ok := i.metadata[hash]
 		if !ok {
 			set = map[client.MetricMetadata]struct{}{}
@@ -1561,7 +1561,7 @@ func TestDistributorValidation(t *testing.T) {
 	}{
 		// Test validation passes.
 		{
-			metadata: []*client.MetricMetadata{{MetricName: "testmetric", Help: "a test metric.", Unit: "", Type: client.COUNTER}},
+			metadata: []*client.MetricMetadata{{MetricFamilyName: "testmetric", Help: "a test metric.", Unit: "", Type: client.COUNTER}},
 			labels:   []labels.Labels{{{Name: labels.MetricName, Value: "testmetric"}, {Name: "foo", Value: "bar"}}},
 			samples: []client.Sample{{
 				TimestampMs: int64(now),
@@ -1611,7 +1611,7 @@ func TestDistributorValidation(t *testing.T) {
 		},
 		// Test metadata validation fails
 		{
-			metadata: []*client.MetricMetadata{{MetricName: "", Help: "a test metric.", Unit: "", Type: client.COUNTER}},
+			metadata: []*client.MetricMetadata{{MetricFamilyName: "", Help: "a test metric.", Unit: "", Type: client.COUNTER}},
 			labels:   []labels.Labels{{{Name: labels.MetricName, Value: "testmetric"}, {Name: "foo", Value: "bar"}}},
 			samples: []client.Sample{{
 				TimestampMs: int64(now),
