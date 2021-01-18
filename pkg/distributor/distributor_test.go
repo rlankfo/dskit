@@ -42,9 +42,9 @@ import (
 )
 
 var (
-	errFail = fmt.Errorf("Fail")
-	success = &client.WriteResponse{}
-	ctx     = user.InjectOrgID(context.Background(), "user")
+	errFail       = fmt.Errorf("Fail")
+	emptyResponse = &client.WriteResponse{}
+	ctx           = user.InjectOrgID(context.Background(), "user")
 )
 
 func TestConfig_Validate(t *testing.T) {
@@ -122,14 +122,14 @@ func TestDistributor_Push(t *testing.T) {
 		"A push of no samples shouldn't block or return error, even if ingesters are sad": {
 			numIngesters:     3,
 			happyIngesters:   0,
-			expectedResponse: success,
+			expectedResponse: emptyResponse,
 		},
 		"A push to 3 happy ingesters should succeed": {
 			numIngesters:     3,
 			happyIngesters:   3,
 			samples:          samplesIn{num: 5, startTimestampMs: 123456789000},
 			metadata:         5,
-			expectedResponse: success,
+			expectedResponse: emptyResponse,
 			metricNames:      []string{lastSeenTimestamp},
 			expectedMetrics: `
 				# HELP cortex_distributor_latest_seen_sample_timestamp_seconds Unix timestamp of latest received sample per user.
@@ -142,7 +142,7 @@ func TestDistributor_Push(t *testing.T) {
 			happyIngesters:   2,
 			samples:          samplesIn{num: 5, startTimestampMs: 123456789000},
 			metadata:         5,
-			expectedResponse: success,
+			expectedResponse: emptyResponse,
 			metricNames:      []string{lastSeenTimestamp},
 			expectedMetrics: `
 				# HELP cortex_distributor_latest_seen_sample_timestamp_seconds Unix timestamp of latest received sample per user.
@@ -193,7 +193,7 @@ func TestDistributor_Push(t *testing.T) {
 			samples:          samplesIn{num: 1, startTimestampMs: 123456789000},
 			metadata:         0,
 			metricNames:      []string{distributorAppend, distributorAppendFailure},
-			expectedResponse: success,
+			expectedResponse: emptyResponse,
 			expectedMetrics: `
 				# HELP cortex_distributor_ingester_append_failures_total The total number of failed batch appends sent to ingesters.
 				# TYPE cortex_distributor_ingester_append_failures_total counter
@@ -211,7 +211,7 @@ func TestDistributor_Push(t *testing.T) {
 			samples:          samplesIn{num: 0, startTimestampMs: 123456789000},
 			metadata:         1,
 			metricNames:      []string{distributorAppend, distributorAppendFailure},
-			expectedResponse: success,
+			expectedResponse: emptyResponse,
 			expectedMetrics: `
 				# HELP cortex_distributor_ingester_append_failures_total The total number of failed batch appends sent to ingesters.
 				# TYPE cortex_distributor_ingester_append_failures_total counter
@@ -347,7 +347,7 @@ func TestDistributor_PushIngestionRateLimiter(t *testing.T) {
 				response, err := distributors[0].Push(ctx, request)
 
 				if push.expectedError == nil {
-					assert.Equal(t, success, response)
+					assert.Equal(t, emptyResponse, response)
 					assert.Nil(t, err)
 				} else {
 					assert.Nil(t, response)
@@ -376,7 +376,7 @@ func TestDistributor_PushHAInstances(t *testing.T) {
 			testReplica:      "instance0",
 			cluster:          "cluster0",
 			samples:          5,
-			expectedResponse: success,
+			expectedResponse: emptyResponse,
 		},
 		// The 202 indicates that we didn't accept this sample.
 		{
@@ -394,7 +394,17 @@ func TestDistributor_PushHAInstances(t *testing.T) {
 			testReplica:      "instance0",
 			cluster:          "cluster0",
 			samples:          5,
-			expectedResponse: success,
+			expectedResponse: emptyResponse,
+		},
+		// Using very long replica label value results in validation error.
+		{
+			enableTracker:    true,
+			acceptedReplica:  "instance0",
+			testReplica:      "instance1234567890123456789012345678901234567890",
+			cluster:          "cluster0",
+			samples:          5,
+			expectedResponse: emptyResponse,
+			expectedCode:     400,
 		},
 	} {
 		for _, shardByAllLabels := range []bool{true, false} {
@@ -402,6 +412,7 @@ func TestDistributor_PushHAInstances(t *testing.T) {
 				var limits validation.Limits
 				flagext.DefaultValues(&limits)
 				limits.AcceptHASamples = true
+				limits.MaxLabelValueLength = 15
 
 				ds, _, r := prepare(t, prepConfig{
 					numIngesters:     3,
@@ -421,7 +432,7 @@ func TestDistributor_PushHAInstances(t *testing.T) {
 						KVStore:         kv.Config{Mock: mock},
 						UpdateTimeout:   100 * time.Millisecond,
 						FailoverTimeout: time.Second,
-					}, nil)
+					}, trackerLimits{maxClusters: 100}, nil)
 					require.NoError(t, err)
 					require.NoError(t, services.StartAndAwaitRunning(context.Background(), r))
 					d.HATracker = r
@@ -439,6 +450,8 @@ func TestDistributor_PushHAInstances(t *testing.T) {
 				httpResp, ok := httpgrpc.HTTPResponseFromError(err)
 				if ok {
 					assert.Equal(t, tc.expectedCode, httpResp.Code)
+				} else if tc.expectedCode != 0 {
+					assert.Fail(t, "expected HTTP status code", tc.expectedCode)
 				}
 			})
 		}
