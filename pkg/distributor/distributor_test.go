@@ -1118,7 +1118,6 @@ func prepare(t *testing.T, cfg prepConfig) ([]*Distributor, []mockIngester, *rin
 		},
 		HeartbeatTimeout:  60 * time.Minute,
 		ReplicationFactor: 3,
-		ExtendWrites:      true,
 	}, ring.IngesterRingKey, ring.IngesterRingKey, nil)
 	require.NoError(t, err)
 	require.NoError(t, services.StartAndAwaitRunning(context.Background(), ingestersRing))
