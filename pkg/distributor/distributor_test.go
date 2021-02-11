@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-kit/kit/log"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/pkg/labels"
@@ -326,7 +327,7 @@ func TestDistributor_MetricsCleanup(t *testing.T) {
 		cortex_distributor_samples_in_total{user="userA"} 5
 `), metrics...))
 
-	cleanupMetricsForUser("userA")
+	cleanupMetricsForUser("userA", log.NewNopLogger())
 
 	require.NoError(t, testutil.GatherAndCompare(prometheus.DefaultGatherer, strings.NewReader(`
 		# HELP cortex_distributor_deduped_samples_total The total number of deduplicated samples.
@@ -518,12 +519,12 @@ func TestDistributor_PushHAInstances(t *testing.T) {
 				d := ds[0]
 
 				if tc.enableTracker {
-					r, err := newClusterTracker(HATrackerConfig{
+					r, err := newHATracker(HATrackerConfig{
 						EnableHATracker: true,
 						KVStore:         kv.Config{Mock: mock},
 						UpdateTimeout:   100 * time.Millisecond,
 						FailoverTimeout: time.Second,
-					}, trackerLimits{maxClusters: 100}, nil)
+					}, trackerLimits{maxClusters: 100}, nil, log.NewNopLogger())
 					require.NoError(t, err)
 					require.NoError(t, services.StartAndAwaitRunning(context.Background(), r))
 					d.HATracker = r
@@ -531,7 +532,7 @@ func TestDistributor_PushHAInstances(t *testing.T) {
 
 				userID, err := tenant.TenantID(ctx)
 				assert.NoError(t, err)
-				err = d.HATracker.checkReplica(ctx, userID, tc.cluster, tc.acceptedReplica)
+				err = d.HATracker.checkReplica(ctx, userID, tc.cluster, tc.acceptedReplica, time.Now())
 				assert.NoError(t, err)
 
 				request := makeWriteRequestHA(tc.samples, tc.testReplica, tc.cluster)
@@ -1303,7 +1304,7 @@ func prepare(t *testing.T, cfg prepConfig) ([]*Distributor, []mockIngester, *rin
 		overrides, err := validation.NewOverrides(*cfg.limits, nil)
 		require.NoError(t, err)
 
-		d, err := New(distributorCfg, clientConfig, overrides, ingestersRing, true, nil)
+		d, err := New(distributorCfg, clientConfig, overrides, ingestersRing, true, nil, log.NewNopLogger())
 		require.NoError(t, err)
 		require.NoError(t, services.StartAndAwaitRunning(context.Background(), d))
 
