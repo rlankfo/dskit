@@ -28,6 +28,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/cortexproject/cortex/pkg/chunk/encoding"
+	"github.com/cortexproject/cortex/pkg/cortexpb"
 	"github.com/cortexproject/cortex/pkg/ingester/client"
 	"github.com/cortexproject/cortex/pkg/prom1/storage/metric"
 	"github.com/cortexproject/cortex/pkg/ring"
@@ -46,7 +47,7 @@ import (
 
 var (
 	errFail       = fmt.Errorf("Fail")
-	emptyResponse = &client.WriteResponse{}
+	emptyResponse = &cortexpb.WriteResponse{}
 	ctx           = user.InjectOrgID(context.Background(), "user")
 )
 
@@ -118,7 +119,7 @@ func TestDistributor_Push(t *testing.T) {
 		happyIngesters   int
 		samples          samplesIn
 		metadata         int
-		expectedResponse *client.WriteResponse
+		expectedResponse *cortexpb.WriteResponse
 		expectedError    error
 		expectedMetrics  string
 	}{
@@ -459,7 +460,7 @@ func TestDistributor_PushHAInstances(t *testing.T) {
 		testReplica      string
 		cluster          string
 		samples          int
-		expectedResponse *client.WriteResponse
+		expectedResponse *cortexpb.WriteResponse
 		expectedCode     int32
 	}{
 		{
@@ -694,7 +695,7 @@ func TestDistributor_PushQuery(t *testing.T) {
 
 			request := makeWriteRequest(0, tc.samples, tc.metadata)
 			writeResponse, err := ds[0].Push(ctx, request)
-			assert.Equal(t, &client.WriteResponse{}, writeResponse)
+			assert.Equal(t, &cortexpb.WriteResponse{}, writeResponse)
 			assert.Nil(t, err)
 
 			response, err := ds[0].Query(ctx, 0, 10, tc.matchers...)
@@ -808,7 +809,7 @@ func TestDistributor_Push_LabelRemoval(t *testing.T) {
 			timeseries := ingesters[i].series()
 			assert.Equal(t, 1, len(timeseries))
 			for _, v := range timeseries {
-				assert.Equal(t, tc.expectedSeries, client.FromLabelAdaptersToLabels(v.Labels))
+				assert.Equal(t, tc.expectedSeries, cortexpb.FromLabelAdaptersToLabels(v.Labels))
 			}
 		}
 	}
@@ -916,7 +917,7 @@ func TestDistributor_Push_ShouldGuaranteeShardingTokenConsistencyOverTheTime(t *
 
 				series, ok := timeseries[testData.expectedToken]
 				require.True(t, ok)
-				assert.Equal(t, testData.expectedSeries, client.FromLabelAdaptersToLabels(series.Labels))
+				assert.Equal(t, testData.expectedSeries, cortexpb.FromLabelAdaptersToLabels(series.Labels))
 			}
 		})
 	}
@@ -1194,15 +1195,15 @@ func mustNewMatcher(t labels.MatchType, n, v string) *labels.Matcher {
 	return m
 }
 
-func mockWriteRequest(lbls labels.Labels, value float64, timestampMs int64) *client.WriteRequest {
-	samples := []client.Sample{
+func mockWriteRequest(lbls labels.Labels, value float64, timestampMs int64) *cortexpb.WriteRequest {
+	samples := []cortexpb.Sample{
 		{
 			TimestampMs: timestampMs,
 			Value:       value,
 		},
 	}
 
-	return client.ToWriteRequest([]labels.Labels{lbls}, samples, nil, client.API)
+	return cortexpb.ToWriteRequest([]labels.Labels{lbls}, samples, nil, cortexpb.API)
 }
 
 type prepConfig struct {
@@ -1340,19 +1341,19 @@ func stopAll(ds []*Distributor, r *ring.Ring) {
 	r.StopAsync()
 }
 
-func makeWriteRequest(startTimestampMs int64, samples int, metadata int) *client.WriteRequest {
-	request := &client.WriteRequest{}
+func makeWriteRequest(startTimestampMs int64, samples int, metadata int) *cortexpb.WriteRequest {
+	request := &cortexpb.WriteRequest{}
 	for i := 0; i < samples; i++ {
-		ts := client.PreallocTimeseries{
-			TimeSeries: &client.TimeSeries{
-				Labels: []client.LabelAdapter{
+		ts := cortexpb.PreallocTimeseries{
+			TimeSeries: &cortexpb.TimeSeries{
+				Labels: []cortexpb.LabelAdapter{
 					{Name: model.MetricNameLabel, Value: "foo"},
 					{Name: "bar", Value: "baz"},
 					{Name: "sample", Value: fmt.Sprintf("%d", i)},
 				},
 			},
 		}
-		ts.Samples = []client.Sample{
+		ts.Samples = []cortexpb.Sample{
 			{
 				Value:       float64(i),
 				TimestampMs: startTimestampMs + int64(i),
@@ -1362,9 +1363,9 @@ func makeWriteRequest(startTimestampMs int64, samples int, metadata int) *client
 	}
 
 	for i := 0; i < metadata; i++ {
-		m := &client.MetricMetadata{
+		m := &cortexpb.MetricMetadata{
 			MetricFamilyName: fmt.Sprintf("metric_%d", i),
-			Type:             client.COUNTER,
+			Type:             cortexpb.COUNTER,
 			Help:             fmt.Sprintf("a help for metric_%d", i),
 		}
 		request.Metadata = append(request.Metadata, m)
@@ -1373,12 +1374,12 @@ func makeWriteRequest(startTimestampMs int64, samples int, metadata int) *client
 	return request
 }
 
-func makeWriteRequestHA(samples int, replica, cluster string) *client.WriteRequest {
-	request := &client.WriteRequest{}
+func makeWriteRequestHA(samples int, replica, cluster string) *cortexpb.WriteRequest {
+	request := &cortexpb.WriteRequest{}
 	for i := 0; i < samples; i++ {
-		ts := client.PreallocTimeseries{
-			TimeSeries: &client.TimeSeries{
-				Labels: []client.LabelAdapter{
+		ts := cortexpb.PreallocTimeseries{
+			TimeSeries: &cortexpb.TimeSeries{
+				Labels: []cortexpb.LabelAdapter{
 					{Name: "__name__", Value: "foo"},
 					{Name: "__replica__", Value: replica},
 					{Name: "bar", Value: "baz"},
@@ -1387,7 +1388,7 @@ func makeWriteRequestHA(samples int, replica, cluster string) *client.WriteReque
 				},
 			},
 		}
-		ts.Samples = []client.Sample{
+		ts.Samples = []cortexpb.Sample{
 			{
 				Value:       float64(i),
 				TimestampMs: int64(i),
@@ -1432,17 +1433,17 @@ type mockIngester struct {
 	grpc_health_v1.HealthClient
 	happy      bool
 	stats      client.UsersStatsResponse
-	timeseries map[uint32]*client.PreallocTimeseries
-	metadata   map[uint32]map[client.MetricMetadata]struct{}
+	timeseries map[uint32]*cortexpb.PreallocTimeseries
+	metadata   map[uint32]map[cortexpb.MetricMetadata]struct{}
 	queryDelay time.Duration
 	calls      map[string]int
 }
 
-func (i *mockIngester) series() map[uint32]*client.PreallocTimeseries {
+func (i *mockIngester) series() map[uint32]*cortexpb.PreallocTimeseries {
 	i.Lock()
 	defer i.Unlock()
 
-	result := map[uint32]*client.PreallocTimeseries{}
+	result := map[uint32]*cortexpb.PreallocTimeseries{}
 	for k, v := range i.timeseries {
 		result[k] = v
 	}
@@ -1462,7 +1463,7 @@ func (i *mockIngester) Close() error {
 	return nil
 }
 
-func (i *mockIngester) Push(ctx context.Context, req *client.WriteRequest, opts ...grpc.CallOption) (*client.WriteResponse, error) {
+func (i *mockIngester) Push(ctx context.Context, req *cortexpb.WriteRequest, opts ...grpc.CallOption) (*cortexpb.WriteResponse, error) {
 	i.Lock()
 	defer i.Unlock()
 
@@ -1473,11 +1474,11 @@ func (i *mockIngester) Push(ctx context.Context, req *client.WriteRequest, opts 
 	}
 
 	if i.timeseries == nil {
-		i.timeseries = map[uint32]*client.PreallocTimeseries{}
+		i.timeseries = map[uint32]*cortexpb.PreallocTimeseries{}
 	}
 
 	if i.metadata == nil {
-		i.metadata = map[uint32]map[client.MetricMetadata]struct{}{}
+		i.metadata = map[uint32]map[cortexpb.MetricMetadata]struct{}{}
 	}
 
 	orgid, err := tenant.TenantID(ctx)
@@ -1491,15 +1492,15 @@ func (i *mockIngester) Push(ctx context.Context, req *client.WriteRequest, opts 
 		existing, ok := i.timeseries[hash]
 		if !ok {
 			// Make a copy because the request Timeseries are reused
-			item := client.TimeSeries{
-				Labels:  make([]client.LabelAdapter, len(series.TimeSeries.Labels)),
-				Samples: make([]client.Sample, len(series.TimeSeries.Samples)),
+			item := cortexpb.TimeSeries{
+				Labels:  make([]cortexpb.LabelAdapter, len(series.TimeSeries.Labels)),
+				Samples: make([]cortexpb.Sample, len(series.TimeSeries.Samples)),
 			}
 
 			copy(item.Labels, series.TimeSeries.Labels)
 			copy(item.Samples, series.TimeSeries.Samples)
 
-			i.timeseries[hash] = &client.PreallocTimeseries{TimeSeries: &item}
+			i.timeseries[hash] = &cortexpb.PreallocTimeseries{TimeSeries: &item}
 		} else {
 			existing.Samples = append(existing.Samples, series.Samples...)
 		}
@@ -1509,13 +1510,13 @@ func (i *mockIngester) Push(ctx context.Context, req *client.WriteRequest, opts 
 		hash := shardByMetricName(orgid, m.MetricFamilyName)
 		set, ok := i.metadata[hash]
 		if !ok {
-			set = map[client.MetricMetadata]struct{}{}
+			set = map[cortexpb.MetricMetadata]struct{}{}
 			i.metadata[hash] = set
 		}
 		set[*m] = struct{}{}
 	}
 
-	return &client.WriteResponse{}, nil
+	return &cortexpb.WriteResponse{}, nil
 }
 
 func (i *mockIngester) Query(ctx context.Context, req *client.QueryRequest, opts ...grpc.CallOption) (*client.QueryResponse, error) {
@@ -1629,7 +1630,7 @@ func (i *mockIngester) MetricsForLabelMatchers(ctx context.Context, req *client.
 	for _, matchers := range multiMatchers {
 		for _, ts := range i.timeseries {
 			if match(ts.Labels, matchers) {
-				response.Metric = append(response.Metric, &client.Metric{Labels: ts.Labels})
+				response.Metric = append(response.Metric, &cortexpb.Metric{Labels: ts.Labels})
 			}
 		}
 	}
@@ -1694,7 +1695,7 @@ func (i *mockIngester) AllUserStats(ctx context.Context, in *client.UserStatsReq
 	return &i.stats, nil
 }
 
-func match(labels []client.LabelAdapter, matchers []*labels.Matcher) bool {
+func match(labels []cortexpb.LabelAdapter, matchers []*labels.Matcher) bool {
 outer:
 	for _, matcher := range matchers {
 		for _, labels := range labels {
@@ -1713,16 +1714,16 @@ func TestDistributorValidation(t *testing.T) {
 	future, past := now.Add(5*time.Hour), now.Add(-25*time.Hour)
 
 	for i, tc := range []struct {
-		metadata []*client.MetricMetadata
+		metadata []*cortexpb.MetricMetadata
 		labels   []labels.Labels
-		samples  []client.Sample
+		samples  []cortexpb.Sample
 		err      error
 	}{
 		// Test validation passes.
 		{
-			metadata: []*client.MetricMetadata{{MetricFamilyName: "testmetric", Help: "a test metric.", Unit: "", Type: client.COUNTER}},
+			metadata: []*cortexpb.MetricMetadata{{MetricFamilyName: "testmetric", Help: "a test metric.", Unit: "", Type: cortexpb.COUNTER}},
 			labels:   []labels.Labels{{{Name: labels.MetricName, Value: "testmetric"}, {Name: "foo", Value: "bar"}}},
-			samples: []client.Sample{{
+			samples: []cortexpb.Sample{{
 				TimestampMs: int64(now),
 				Value:       1,
 			}},
@@ -1730,7 +1731,7 @@ func TestDistributorValidation(t *testing.T) {
 		// Test validation fails for very old samples.
 		{
 			labels: []labels.Labels{{{Name: labels.MetricName, Value: "testmetric"}, {Name: "foo", Value: "bar"}}},
-			samples: []client.Sample{{
+			samples: []cortexpb.Sample{{
 				TimestampMs: int64(past),
 				Value:       2,
 			}},
@@ -1740,7 +1741,7 @@ func TestDistributorValidation(t *testing.T) {
 		// Test validation fails for samples from the future.
 		{
 			labels: []labels.Labels{{{Name: labels.MetricName, Value: "testmetric"}, {Name: "foo", Value: "bar"}}},
-			samples: []client.Sample{{
+			samples: []cortexpb.Sample{{
 				TimestampMs: int64(future),
 				Value:       4,
 			}},
@@ -1750,7 +1751,7 @@ func TestDistributorValidation(t *testing.T) {
 		// Test maximum labels names per series.
 		{
 			labels: []labels.Labels{{{Name: labels.MetricName, Value: "testmetric"}, {Name: "foo", Value: "bar"}, {Name: "foo2", Value: "bar2"}}},
-			samples: []client.Sample{{
+			samples: []cortexpb.Sample{{
 				TimestampMs: int64(now),
 				Value:       2,
 			}},
@@ -1762,7 +1763,7 @@ func TestDistributorValidation(t *testing.T) {
 				{{Name: labels.MetricName, Value: "testmetric"}, {Name: "foo", Value: "bar"}, {Name: "foo2", Value: "bar2"}},
 				{{Name: labels.MetricName, Value: "testmetric"}, {Name: "foo", Value: "bar"}},
 			},
-			samples: []client.Sample{
+			samples: []cortexpb.Sample{
 				{TimestampMs: int64(now), Value: 2},
 				{TimestampMs: int64(past), Value: 2},
 			},
@@ -1770,9 +1771,9 @@ func TestDistributorValidation(t *testing.T) {
 		},
 		// Test metadata validation fails
 		{
-			metadata: []*client.MetricMetadata{{MetricFamilyName: "", Help: "a test metric.", Unit: "", Type: client.COUNTER}},
+			metadata: []*cortexpb.MetricMetadata{{MetricFamilyName: "", Help: "a test metric.", Unit: "", Type: cortexpb.COUNTER}},
 			labels:   []labels.Labels{{{Name: labels.MetricName, Value: "testmetric"}, {Name: "foo", Value: "bar"}}},
-			samples: []client.Sample{{
+			samples: []cortexpb.Sample{{
 				TimestampMs: int64(now),
 				Value:       1,
 			}},
@@ -1807,18 +1808,18 @@ func TestRemoveReplicaLabel(t *testing.T) {
 	replicaLabel := "replica"
 	clusterLabel := "cluster"
 	cases := []struct {
-		labelsIn  []client.LabelAdapter
-		labelsOut []client.LabelAdapter
+		labelsIn  []cortexpb.LabelAdapter
+		labelsOut []cortexpb.LabelAdapter
 	}{
 		// Replica label is present
 		{
-			labelsIn: []client.LabelAdapter{
+			labelsIn: []cortexpb.LabelAdapter{
 				{Name: "__name__", Value: "foo"},
 				{Name: "bar", Value: "baz"},
 				{Name: "sample", Value: "1"},
 				{Name: "replica", Value: replicaLabel},
 			},
-			labelsOut: []client.LabelAdapter{
+			labelsOut: []cortexpb.LabelAdapter{
 				{Name: "__name__", Value: "foo"},
 				{Name: "bar", Value: "baz"},
 				{Name: "sample", Value: "1"},
@@ -1826,13 +1827,13 @@ func TestRemoveReplicaLabel(t *testing.T) {
 		},
 		// Replica label is not present
 		{
-			labelsIn: []client.LabelAdapter{
+			labelsIn: []cortexpb.LabelAdapter{
 				{Name: "__name__", Value: "foo"},
 				{Name: "bar", Value: "baz"},
 				{Name: "sample", Value: "1"},
 				{Name: "cluster", Value: clusterLabel},
 			},
-			labelsOut: []client.LabelAdapter{
+			labelsOut: []cortexpb.LabelAdapter{
 				{Name: "__name__", Value: "foo"},
 				{Name: "bar", Value: "baz"},
 				{Name: "sample", Value: "1"},
@@ -1849,13 +1850,13 @@ func TestRemoveReplicaLabel(t *testing.T) {
 
 // This is not great, but we deal with unsorted labels when validating labels.
 func TestShardByAllLabelsReturnsWrongResultsForUnsortedLabels(t *testing.T) {
-	val1 := shardByAllLabels("test", []client.LabelAdapter{
+	val1 := shardByAllLabels("test", []cortexpb.LabelAdapter{
 		{Name: "__name__", Value: "foo"},
 		{Name: "bar", Value: "baz"},
 		{Name: "sample", Value: "1"},
 	})
 
-	val2 := shardByAllLabels("test", []client.LabelAdapter{
+	val2 := shardByAllLabels("test", []cortexpb.LabelAdapter{
 		{Name: "__name__", Value: "foo"},
 		{Name: "sample", Value: "1"},
 		{Name: "bar", Value: "baz"},
@@ -1865,7 +1866,7 @@ func TestShardByAllLabelsReturnsWrongResultsForUnsortedLabels(t *testing.T) {
 }
 
 func TestSortLabels(t *testing.T) {
-	sorted := []client.LabelAdapter{
+	sorted := []cortexpb.LabelAdapter{
 		{Name: "__name__", Value: "foo"},
 		{Name: "bar", Value: "baz"},
 		{Name: "cluster", Value: "cluster"},
@@ -1877,7 +1878,7 @@ func TestSortLabels(t *testing.T) {
 		sortLabelsIfNeeded(sorted)
 	}))
 
-	unsorted := []client.LabelAdapter{
+	unsorted := []cortexpb.LabelAdapter{
 		{Name: "__name__", Value: "foo"},
 		{Name: "sample", Value: "1"},
 		{Name: "cluster", Value: "cluster"},
@@ -1959,7 +1960,7 @@ func TestDistributor_Push_Relabel(t *testing.T) {
 			timeseries := ingesters[i].series()
 			assert.Equal(t, 1, len(timeseries))
 			for _, v := range timeseries {
-				assert.Equal(t, tc.expectedSeries, client.FromLabelAdaptersToLabels(v.Labels))
+				assert.Equal(t, tc.expectedSeries, cortexpb.FromLabelAdaptersToLabels(v.Labels))
 			}
 		}
 	}
