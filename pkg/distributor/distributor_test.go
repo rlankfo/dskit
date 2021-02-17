@@ -368,6 +368,7 @@ func TestDistributor_PushIngestionRateLimiter(t *testing.T) {
 		ingestionRateStrategy string
 		ingestionRate         float64
 		ingestionBurstSize    int
+		ingestionFailing      bool
 		pushes                []testPush
 	}{
 		"local strategy: limit should be set to each distributor": {
@@ -412,6 +413,17 @@ func TestDistributor_PushIngestionRateLimiter(t *testing.T) {
 				{metadata: 1, expectedError: httpgrpc.Errorf(http.StatusTooManyRequests, "ingestion rate limit (5) exceeded while adding 0 samples and 1 metadata")},
 			},
 		},
+		"unhappy ingesters: rate limit should be unaffected when ingestion fails": {
+			distributors:          1,
+			ingestionRateStrategy: validation.LocalIngestionRateStrategy,
+			ingestionRate:         10,
+			ingestionBurstSize:    10,
+			ingestionFailing:      true,
+			pushes: []testPush{
+				{samples: 10, expectedError: errFail},
+				{samples: 10, expectedError: errFail},
+			},
+		},
 	}
 
 	for testName, testData := range tests {
@@ -424,10 +436,15 @@ func TestDistributor_PushIngestionRateLimiter(t *testing.T) {
 			limits.IngestionRate = testData.ingestionRate
 			limits.IngestionBurstSize = testData.ingestionBurstSize
 
+			happyIngesters := 3
+			if testData.ingestionFailing {
+				happyIngesters = 0
+			}
+
 			// Start all expected distributors
 			distributors, _, r := prepare(t, prepConfig{
 				numIngesters:     3,
-				happyIngesters:   3,
+				happyIngesters:   happyIngesters,
 				numDistributors:  testData.distributors,
 				shardByAllLabels: true,
 				limits:           limits,
