@@ -230,16 +230,12 @@ func TestDistributor_Push(t *testing.T) {
 	} {
 		for _, shardByAllLabels := range []bool{true, false} {
 			t.Run(fmt.Sprintf("[%s](shardByAllLabels=%v)", name, shardByAllLabels), func(t *testing.T) {
-				latestSeenSampleTimestampPerUser.Reset()
-				ingesterAppends.Reset()
-				ingesterAppendFailures.Reset()
-
 				limits := &validation.Limits{}
 				flagext.DefaultValues(limits)
 				limits.IngestionRate = 20
 				limits.IngestionBurstSize = 20
 
-				ds, _, r := prepare(t, prepConfig{
+				ds, _, r, regs := prepare(t, prepConfig{
 					numIngesters:     tc.numIngesters,
 					happyIngesters:   tc.happyIngesters,
 					numDistributors:  1,
@@ -259,7 +255,7 @@ func TestDistributor_Push(t *testing.T) {
 				// within a reasonable timeout.
 				if tc.expectedMetrics != "" {
 					test.Poll(t, time.Second, nil, func() interface{} {
-						return testutil.GatherAndCompare(prometheus.DefaultGatherer, strings.NewReader(tc.expectedMetrics), tc.metricNames...)
+						return testutil.GatherAndCompare(regs[0], strings.NewReader(tc.expectedMetrics), tc.metricNames...)
 					})
 				}
 			})
@@ -268,13 +264,11 @@ func TestDistributor_Push(t *testing.T) {
 }
 
 func TestDistributor_MetricsCleanup(t *testing.T) {
-	receivedSamples.Reset()
-	receivedMetadata.Reset()
-	incomingSamples.Reset()
-	incomingMetadata.Reset()
-	nonHASamples.Reset()
-	dedupedSamples.Reset()
-	latestSeenSampleTimestampPerUser.Reset()
+	dists, _, _, regs := prepare(t, prepConfig{
+		numDistributors: 1,
+	})
+	d := dists[0]
+	reg := regs[0]
 
 	metrics := []string{
 		"cortex_distributor_received_samples_total",
@@ -286,17 +280,17 @@ func TestDistributor_MetricsCleanup(t *testing.T) {
 		"cortex_distributor_latest_seen_sample_timestamp_seconds",
 	}
 
-	receivedSamples.WithLabelValues("userA").Add(5)
-	receivedSamples.WithLabelValues("userB").Add(10)
-	receivedMetadata.WithLabelValues("userA").Add(5)
-	receivedMetadata.WithLabelValues("userB").Add(10)
-	incomingSamples.WithLabelValues("userA").Add(5)
-	incomingMetadata.WithLabelValues("userA").Add(5)
-	nonHASamples.WithLabelValues("userA").Add(5)
-	dedupedSamples.WithLabelValues("userA", "cluster1").Inc() // We cannot clean this metric
-	latestSeenSampleTimestampPerUser.WithLabelValues("userA").Set(1111)
+	d.receivedSamples.WithLabelValues("userA").Add(5)
+	d.receivedSamples.WithLabelValues("userB").Add(10)
+	d.receivedMetadata.WithLabelValues("userA").Add(5)
+	d.receivedMetadata.WithLabelValues("userB").Add(10)
+	d.incomingSamples.WithLabelValues("userA").Add(5)
+	d.incomingMetadata.WithLabelValues("userA").Add(5)
+	d.nonHASamples.WithLabelValues("userA").Add(5)
+	d.dedupedSamples.WithLabelValues("userA", "cluster1").Inc() // We cannot clean this metric
+	d.latestSeenSampleTimestampPerUser.WithLabelValues("userA").Set(1111)
 
-	require.NoError(t, testutil.GatherAndCompare(prometheus.DefaultGatherer, strings.NewReader(`
+	require.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(`
 		# HELP cortex_distributor_deduped_samples_total The total number of deduplicated samples.
 		# TYPE cortex_distributor_deduped_samples_total counter
 		cortex_distributor_deduped_samples_total{cluster="cluster1",user="userA"} 1
@@ -328,9 +322,9 @@ func TestDistributor_MetricsCleanup(t *testing.T) {
 		cortex_distributor_samples_in_total{user="userA"} 5
 `), metrics...))
 
-	cleanupMetricsForUser("userA", log.NewNopLogger())
+	d.cleanupMetricsForUser("userA")
 
-	require.NoError(t, testutil.GatherAndCompare(prometheus.DefaultGatherer, strings.NewReader(`
+	require.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(`
 		# HELP cortex_distributor_deduped_samples_total The total number of deduplicated samples.
 		# TYPE cortex_distributor_deduped_samples_total counter
 
@@ -442,7 +436,7 @@ func TestDistributor_PushIngestionRateLimiter(t *testing.T) {
 			}
 
 			// Start all expected distributors
-			distributors, _, r := prepare(t, prepConfig{
+			distributors, _, r, _ := prepare(t, prepConfig{
 				numIngesters:     3,
 				happyIngesters:   happyIngesters,
 				numDistributors:  testData.distributors,
@@ -524,7 +518,7 @@ func TestDistributor_PushHAInstances(t *testing.T) {
 				limits.AcceptHASamples = true
 				limits.MaxLabelValueLength = 15
 
-				ds, _, r := prepare(t, prepConfig{
+				ds, _, r, _ := prepare(t, prepConfig{
 					numIngesters:     3,
 					happyIngesters:   3,
 					numDistributors:  1,
@@ -700,7 +694,7 @@ func TestDistributor_PushQuery(t *testing.T) {
 
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
-			ds, ingesters, r := prepare(t, prepConfig{
+			ds, ingesters, r, _ := prepare(t, prepConfig{
 				numIngesters:        tc.numIngesters,
 				happyIngesters:      tc.happyIngesters,
 				numDistributors:     1,
@@ -806,7 +800,7 @@ func TestDistributor_Push_LabelRemoval(t *testing.T) {
 		limits.DropLabels = tc.removeLabels
 		limits.AcceptHASamples = tc.removeReplica
 
-		ds, ingesters, r := prepare(t, prepConfig{
+		ds, ingesters, r, _ := prepare(t, prepConfig{
 			numIngesters:     2,
 			happyIngesters:   2,
 			numDistributors:  1,
@@ -912,7 +906,7 @@ func TestDistributor_Push_ShouldGuaranteeShardingTokenConsistencyOverTheTime(t *
 
 	for testName, testData := range tests {
 		t.Run(testName, func(t *testing.T) {
-			ds, ingesters, r := prepare(t, prepConfig{
+			ds, ingesters, r, _ := prepare(t, prepConfig{
 				numIngesters:     2,
 				happyIngesters:   2,
 				numDistributors:  1,
@@ -971,7 +965,7 @@ func TestDistributor_Push_LabelNameValidation(t *testing.T) {
 
 	for testName, tc := range tests {
 		t.Run(testName, func(t *testing.T) {
-			ds, _, _ := prepare(t, prepConfig{
+			ds, _, _, _ := prepare(t, prepConfig{
 				numIngesters:            2,
 				happyIngesters:          2,
 				numDistributors:         1,
@@ -1002,7 +996,7 @@ func TestSlowQueries(t *testing.T) {
 					expectedErr = errFail
 				}
 
-				ds, _, r := prepare(t, prepConfig{
+				ds, _, r, _ := prepare(t, prepConfig{
 					numIngesters:     nIngesters,
 					happyIngesters:   happy,
 					numDistributors:  1,
@@ -1112,7 +1106,7 @@ func TestDistributor_MetricsForLabelMatchers(t *testing.T) {
 			now := model.Now()
 
 			// Create distributor
-			ds, ingesters, r := prepare(t, prepConfig{
+			ds, ingesters, r, _ := prepare(t, prepConfig{
 				numIngesters:        numIngesters,
 				happyIngesters:      numIngesters,
 				numDistributors:     1,
@@ -1171,7 +1165,7 @@ func TestDistributor_MetricsMetadata(t *testing.T) {
 	for testName, testData := range tests {
 		t.Run(testName, func(t *testing.T) {
 			// Create distributor
-			ds, ingesters, r := prepare(t, prepConfig{
+			ds, ingesters, r, _ := prepare(t, prepConfig{
 				numIngesters:        numIngesters,
 				happyIngesters:      numIngesters,
 				numDistributors:     1,
@@ -1234,7 +1228,7 @@ type prepConfig struct {
 	skipLabelNameValidation      bool
 }
 
-func prepare(t *testing.T, cfg prepConfig) ([]*Distributor, []mockIngester, *ring.Ring) {
+func prepare(t *testing.T, cfg prepConfig) ([]*Distributor, []mockIngester, *ring.Ring, []*prometheus.Registry) {
 	ingesters := []mockIngester{}
 	for i := 0; i < cfg.happyIngesters; i++ {
 		ingesters = append(ingesters, mockIngester{
@@ -1293,6 +1287,7 @@ func prepare(t *testing.T, cfg prepConfig) ([]*Distributor, []mockIngester, *rin
 	}
 
 	distributors := make([]*Distributor, 0, cfg.numDistributors)
+	registries := make([]*prometheus.Registry, 0, cfg.numDistributors)
 	for i := 0; i < cfg.numDistributors; i++ {
 		if cfg.limits == nil {
 			cfg.limits = &validation.Limits{}
@@ -1322,11 +1317,13 @@ func prepare(t *testing.T, cfg prepConfig) ([]*Distributor, []mockIngester, *rin
 		overrides, err := validation.NewOverrides(*cfg.limits, nil)
 		require.NoError(t, err)
 
-		d, err := New(distributorCfg, clientConfig, overrides, ingestersRing, true, nil, log.NewNopLogger())
+		reg := prometheus.NewPedanticRegistry()
+		d, err := New(distributorCfg, clientConfig, overrides, ingestersRing, true, reg, log.NewNopLogger())
 		require.NoError(t, err)
 		require.NoError(t, services.StartAndAwaitRunning(context.Background(), d))
 
 		distributors = append(distributors, d)
+		registries = append(registries, reg)
 	}
 
 	// If the distributors ring is setup, wait until the first distributor
@@ -1337,7 +1334,7 @@ func prepare(t *testing.T, cfg prepConfig) ([]*Distributor, []mockIngester, *rin
 		})
 	}
 
-	return distributors, ingesters, ingestersRing
+	return distributors, ingesters, ingestersRing, registries
 }
 
 func stopAll(ds []*Distributor, r *ring.Ring) {
@@ -1806,7 +1803,7 @@ func TestDistributorValidation(t *testing.T) {
 			limits.RejectOldSamplesMaxAge = 24 * time.Hour
 			limits.MaxLabelNamesPerSeries = 2
 
-			ds, _, r := prepare(t, prepConfig{
+			ds, _, r, _ := prepare(t, prepConfig{
 				numIngesters:     3,
 				happyIngesters:   3,
 				numDistributors:  1,
@@ -1957,7 +1954,7 @@ func TestDistributor_Push_Relabel(t *testing.T) {
 		flagext.DefaultValues(&limits)
 		limits.MetricRelabelConfigs = tc.metricRelabelConfigs
 
-		ds, ingesters, r := prepare(t, prepConfig{
+		ds, ingesters, r, _ := prepare(t, prepConfig{
 			numIngesters:     2,
 			happyIngesters:   2,
 			numDistributors:  1,
