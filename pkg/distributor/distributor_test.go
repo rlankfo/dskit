@@ -1732,7 +1732,7 @@ func TestDistributorValidation(t *testing.T) {
 				TimestampMs: int64(past),
 				Value:       2,
 			}},
-			err: httpgrpc.Errorf(http.StatusBadRequest, "sample for 'testmetric' has timestamp too old: %d", past),
+			err: httpgrpc.Errorf(http.StatusBadRequest, `timestamp too old: %d metric: "testmetric"`, past),
 		},
 
 		// Test validation fails for samples from the future.
@@ -1742,7 +1742,7 @@ func TestDistributorValidation(t *testing.T) {
 				TimestampMs: int64(future),
 				Value:       4,
 			}},
-			err: httpgrpc.Errorf(http.StatusBadRequest, "sample for 'testmetric' has timestamp too new: %d", future),
+			err: httpgrpc.Errorf(http.StatusBadRequest, `timestamp too new: %d metric: "testmetric"`, future),
 		},
 
 		// Test maximum labels names per series.
