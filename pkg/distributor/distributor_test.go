@@ -49,7 +49,6 @@ import (
 var (
 	errFail       = fmt.Errorf("Fail")
 	emptyResponse = &cortexpb.WriteResponse{}
-	ctx           = user.InjectOrgID(context.Background(), "user")
 )
 
 func TestConfig_Validate(t *testing.T) {
@@ -109,6 +108,7 @@ func TestDistributor_Push(t *testing.T) {
 	lastSeenTimestamp := "cortex_distributor_latest_seen_sample_timestamp_seconds"
 	distributorAppend := "cortex_distributor_ingester_appends_total"
 	distributorAppendFailure := "cortex_distributor_ingester_append_failures_total"
+	ctx := user.InjectOrgID(context.Background(), "user")
 
 	type samplesIn struct {
 		num              int
@@ -379,6 +379,7 @@ func TestDistributor_PushIngestionRateLimiter(t *testing.T) {
 		expectedError error
 	}
 
+	ctx := user.InjectOrgID(context.Background(), "user")
 	tests := map[string]struct {
 		distributors          int
 		ingestionRateStrategy string
@@ -468,12 +469,14 @@ func TestDistributor_PushIngestionRateLimiter(t *testing.T) {
 }
 
 func TestDistributor_PushInstanceLimits(t *testing.T) {
+
 	type testPush struct {
 		samples       int
 		metadata      int
 		expectedError error
 	}
 
+	ctx := user.InjectOrgID(context.Background(), "user")
 	tests := map[string]struct {
 		preInflight    int
 		preRateSamples int        // initial rate before first push
@@ -617,7 +620,7 @@ func TestDistributor_PushInstanceLimits(t *testing.T) {
 }
 
 func TestDistributor_PushHAInstances(t *testing.T) {
-	ctx = user.InjectOrgID(context.Background(), "user")
+	ctx := user.InjectOrgID(context.Background(), "user")
 
 	for i, tc := range []struct {
 		enableTracker    bool
@@ -719,6 +722,7 @@ func TestDistributor_PushHAInstances(t *testing.T) {
 func TestDistributor_PushQuery(t *testing.T) {
 	const shuffleShardSize = 5
 
+	ctx := user.InjectOrgID(context.Background(), "user")
 	nameMatcher := mustEqualMatcher(model.MetricNameLabel, "foo")
 	barMatcher := mustEqualMatcher("bar", "baz")
 
@@ -894,6 +898,7 @@ func TestDistributor_PushQuery(t *testing.T) {
 func TestDistributor_QueryStream_ShouldReturnErrorIfMaxChunksPerQueryLimitIsReached(t *testing.T) {
 	const maxChunksLimit = 30 // Chunks are duplicated due to replication factor.
 
+	ctx := user.InjectOrgID(context.Background(), "user")
 	limits := &validation.Limits{}
 	flagext.DefaultValues(limits)
 	limits.MaxChunksPerQuery = maxChunksLimit
@@ -948,9 +953,11 @@ func TestDistributor_QueryStream_ShouldReturnErrorIfMaxChunksPerQueryLimitIsReac
 func TestDistributor_QueryStream_ShouldReturnErrorIfMaxSeriesPerQueryLimitIsReached(t *testing.T) {
 	const maxSeriesLimit = 10
 
+	ctx := user.InjectOrgID(context.Background(), "user")
 	limits := &validation.Limits{}
 	flagext.DefaultValues(limits)
-	ctx = limiter.AddQueryLimiterToContext(ctx, limiter.NewQueryLimiter(maxSeriesLimit))
+	ctx = limiter.AddQueryLimiterToContext(ctx, limiter.NewQueryLimiter(maxSeriesLimit, 0))
+
 	// Prepare distributors.
 	ds, _, r, _ := prepare(t, prepConfig{
 		numIngesters:     3,
@@ -993,10 +1000,78 @@ func TestDistributor_QueryStream_ShouldReturnErrorIfMaxSeriesPerQueryLimitIsReac
 	_, err = ds[0].QueryStream(ctx, math.MinInt32, math.MaxInt32, allSeriesMatchers...)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "max number of series limit")
+
+}
+
+func TestDistributor_QueryStream_ShouldReturnErrorIfMaxChunkBytesPerQueryLimitIsReached(t *testing.T) {
+	const seriesToAdd = 10
+
+	ctx := user.InjectOrgID(context.Background(), "user")
+	limits := &validation.Limits{}
+	flagext.DefaultValues(limits)
+
+	// Prepare distributors.
+	ds, _, r, _ := prepare(t, prepConfig{
+		numIngesters:     3,
+		happyIngesters:   3,
+		numDistributors:  1,
+		shardByAllLabels: true,
+		limits:           limits,
+	})
+	defer stopAll(ds, r)
+
+	allSeriesMatchers := []*labels.Matcher{
+		labels.MustNewMatcher(labels.MatchRegexp, model.MetricNameLabel, ".+"),
+	}
+	// Push a single series to allow us to calculate the chunk size to calculate the limit for the test.
+	writeReq := &cortexpb.WriteRequest{}
+	writeReq.Timeseries = append(writeReq.Timeseries,
+		makeWriteRequestTimeseries([]cortexpb.LabelAdapter{{Name: model.MetricNameLabel, Value: "another_series"}}, 0, 0),
+	)
+	writeRes, err := ds[0].Push(ctx, writeReq)
+	assert.Equal(t, &cortexpb.WriteResponse{}, writeRes)
+	assert.Nil(t, err)
+	chunkSizeResponse, err := ds[0].QueryStream(ctx, math.MinInt32, math.MaxInt32, allSeriesMatchers...)
+	require.NoError(t, err)
+
+	// Use the resulting chunks size to calculate the limit as (series to add + our test series) * the response chunk size.
+	var responseChunkSize = chunkSizeResponse.ChunksSize()
+	var maxBytesLimit = (seriesToAdd) * responseChunkSize
+
+	// Update the limiter with the calculated limits.
+	ctx = limiter.AddQueryLimiterToContext(ctx, limiter.NewQueryLimiter(0, maxBytesLimit))
+
+	// Push a number of series below the max chunk bytes limit. Subtract one for the series added above.
+	writeReq = makeWriteRequest(0, seriesToAdd-1, 0)
+	writeRes, err = ds[0].Push(ctx, writeReq)
+	assert.Equal(t, &cortexpb.WriteResponse{}, writeRes)
+	assert.Nil(t, err)
+
+	// Since the number of chunk bytes is equal to the limit (but doesn't
+	// exceed it), we expect a query running on all series to succeed.
+	queryRes, err := ds[0].QueryStream(ctx, math.MinInt32, math.MaxInt32, allSeriesMatchers...)
+	require.NoError(t, err)
+	assert.Len(t, queryRes.Chunkseries, seriesToAdd)
+
+	// Push another series to exceed the chunk bytes limit once we'll query back all series.
+	writeReq = &cortexpb.WriteRequest{}
+	writeReq.Timeseries = append(writeReq.Timeseries,
+		makeWriteRequestTimeseries([]cortexpb.LabelAdapter{{Name: model.MetricNameLabel, Value: "another_series_1"}}, 0, 0),
+	)
+
+	writeRes, err = ds[0].Push(ctx, writeReq)
+	assert.Equal(t, &cortexpb.WriteResponse{}, writeRes)
+	assert.Nil(t, err)
+
+	// Since the aggregated chunk size is exceeding the limit, we expect
+	// a query running on all series to fail.
+	_, err = ds[0].QueryStream(ctx, math.MinInt32, math.MaxInt32, allSeriesMatchers...)
+	require.Error(t, err)
+	assert.Equal(t, err, validation.LimitError(fmt.Sprintf(limiter.ErrMaxChunkBytesHit, maxBytesLimit)))
 }
 
 func TestDistributor_Push_LabelRemoval(t *testing.T) {
-	ctx = user.InjectOrgID(context.Background(), "user")
+	ctx := user.InjectOrgID(context.Background(), "user")
 
 	type testcase struct {
 		inputSeries    labels.Labels
@@ -1085,6 +1160,7 @@ func TestDistributor_Push_LabelRemoval(t *testing.T) {
 }
 
 func TestDistributor_Push_ShouldGuaranteeShardingTokenConsistencyOverTheTime(t *testing.T) {
+	ctx := user.InjectOrgID(context.Background(), "user")
 	tests := map[string]struct {
 		inputSeries    labels.Labels
 		expectedSeries labels.Labels
@@ -1160,8 +1236,6 @@ func TestDistributor_Push_ShouldGuaranteeShardingTokenConsistencyOverTheTime(t *
 	limits.DropLabels = []string{"dropped"}
 	limits.AcceptHASamples = true
 
-	ctx = user.InjectOrgID(context.Background(), "user")
-
 	for testName, testData := range tests {
 		t.Run(testName, func(t *testing.T) {
 			ds, ingesters, r, _ := prepare(t, prepConfig{
@@ -1197,6 +1271,8 @@ func TestDistributor_Push_LabelNameValidation(t *testing.T) {
 		{Name: model.MetricNameLabel, Value: "foo"},
 		{Name: "999.illegal", Value: "baz"},
 	}
+	ctx := user.InjectOrgID(context.Background(), "user")
+
 	tests := map[string]struct {
 		inputLabels                labels.Labels
 		skipLabelNameValidationCfg bool
@@ -1244,7 +1320,7 @@ func TestDistributor_Push_LabelNameValidation(t *testing.T) {
 }
 
 func TestDistributor_Push_ExemplarValidation(t *testing.T) {
-
+	ctx := user.InjectOrgID(context.Background(), "user")
 	manyLabels := []string{model.MetricNameLabel, "test"}
 	for i := 1; i < 31; i++ {
 		manyLabels = append(manyLabels, fmt.Sprintf("name_%d", i), fmt.Sprintf("value_%d", i))
@@ -1291,7 +1367,6 @@ func TestDistributor_Push_ExemplarValidation(t *testing.T) {
 				numDistributors:  1,
 				shuffleShardSize: 1,
 			})
-
 			_, err := ds[0].Push(ctx, tc.req)
 			if tc.errMsg != "" {
 				fromError, _ := status.FromError(err)
@@ -1307,6 +1382,7 @@ func BenchmarkDistributor_Push(b *testing.B) {
 	const (
 		numSeriesPerRequest = 1000
 	)
+	ctx := user.InjectOrgID(context.Background(), "user")
 
 	tests := map[string]struct {
 		prepareConfig func(limits *validation.Limits)
@@ -1498,6 +1574,7 @@ func BenchmarkDistributor_Push(b *testing.B) {
 
 	for testName, testData := range tests {
 		b.Run(testName, func(b *testing.B) {
+
 			// Create an in-memory KV store for the ring with 1 ingester registered.
 			kvStore := consul.NewInMemoryClient(ring.GetCodec())
 			err := kvStore.CAS(context.Background(), ring.IngesterRingKey,
@@ -1572,6 +1649,7 @@ func BenchmarkDistributor_Push(b *testing.B) {
 }
 
 func TestSlowQueries(t *testing.T) {
+	ctx := user.InjectOrgID(context.Background(), "user")
 	nameMatcher := mustEqualMatcher(model.MetricNameLabel, "foo")
 	nIngesters := 3
 	for _, shardByAllLabels := range []bool{true, false} {
@@ -2534,7 +2612,7 @@ func TestSortLabels(t *testing.T) {
 }
 
 func TestDistributor_Push_Relabel(t *testing.T) {
-	ctx = user.InjectOrgID(context.Background(), "user")
+	ctx := user.InjectOrgID(context.Background(), "user")
 
 	type testcase struct {
 		inputSeries          labels.Labels
