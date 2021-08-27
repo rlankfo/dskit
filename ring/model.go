@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/gogo/protobuf/proto"
-
 	"github.com/grafana/dskit/kv/codec"
 	"github.com/grafana/dskit/kv/memberlist"
 )

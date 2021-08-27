@@ -6,14 +6,13 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
+	"github.com/grafana/dskit/kv"
+	"github.com/grafana/dskit/kv/consul"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/grafana/dskit/kv"
-	"github.com/grafana/dskit/kv/consul"
-	"github.com/grafana/dskit/services"
-	"github.com/grafana/dskit/test"
+	"github.com/cortexproject/cortex/pkg/util/test"
 )
 
 const (
@@ -404,6 +403,8 @@ func prepareBasicLifecyclerConfig() BasicLifecyclerConfig {
 }
 
 func prepareBasicLifecycler(t testing.TB, cfg BasicLifecyclerConfig) (*BasicLifecycler, *mockDelegate, kv.Client, error) {
+	t.Helper()
+
 	delegate := &mockDelegate{}
 	lifecycler, store, err := prepareBasicLifecyclerWithDelegate(t, cfg, delegate)
 	return lifecycler, delegate, store, err
@@ -412,7 +413,7 @@ func prepareBasicLifecycler(t testing.TB, cfg BasicLifecyclerConfig) (*BasicLife
 func prepareBasicLifecyclerWithDelegate(t testing.TB, cfg BasicLifecyclerConfig, delegate BasicLifecyclerDelegate) (*BasicLifecycler, kv.Client, error) {
 	t.Helper()
 
-	store, closer := consul.NewInMemoryClient(GetCodec(), log.NewNopLogger(), nil)
+	store, closer := consul.NewInMemoryClient(GetCodec(), log.NewNopLogger())
 	t.Cleanup(func() { assert.NoError(t, closer.Close()) })
 
 	lifecycler, err := NewBasicLifecycler(cfg, testRingName, testRingKey, store, delegate, log.NewNopLogger(), nil)

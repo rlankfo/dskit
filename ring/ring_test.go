@@ -12,16 +12,14 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
+	"github.com/go-kit/kit/log"
+	"github.com/grafana/dskit/kv"
+	"github.com/grafana/dskit/kv/consul"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/grafana/dskit/flagext"
-	"github.com/grafana/dskit/kv"
-	"github.com/grafana/dskit/kv/consul"
-	"github.com/grafana/dskit/ring/shard"
-	"github.com/grafana/dskit/ring/util"
-	"github.com/grafana/dskit/services"
-	"github.com/grafana/dskit/test"
+	"github.com/cortexproject/cortex/pkg/util"
+	"github.com/cortexproject/cortex/pkg/util/test"
 )
 
 const (
@@ -1928,84 +1926,65 @@ func compareReplicationSets(first, second ReplicationSet) (added, removed []stri
 
 // This test verifies that ring is getting updates, even after extending check in the loop method.
 func TestRingUpdates(t *testing.T) {
-	const (
-		numInstances = 3
-		numZones     = 3
-	)
+	inmem, closer := consul.NewInMemoryClient(GetCodec(), log.NewNopLogger())
+	t.Cleanup(func() { assert.NoError(t, closer.Close()) })
 
-	tests := map[string]struct {
-		excludedZones     []string
-		expectedInstances int
-	}{
-		"without excluded zones": {
-			expectedInstances: 3,
-		},
-		"with excluded zones": {
-			excludedZones:     []string{"zone-0"},
-			expectedInstances: 2,
-		},
+	cfg := Config{
+		KVStore:           kv.Config{Mock: inmem},
+		HeartbeatTimeout:  1 * time.Minute,
+		ReplicationFactor: 3,
 	}
 
-	for testName, testData := range tests {
-		t.Run(testName, func(t *testing.T) {
-			inmem, closer := consul.NewInMemoryClient(GetCodec(), log.NewNopLogger(), nil)
-			t.Cleanup(func() { assert.NoError(t, closer.Close()) })
+	ring, err := New(cfg, "test", "test", nil)
+	require.NoError(t, err)
+	require.NoError(t, services.StartAndAwaitRunning(context.Background(), ring))
+	t.Cleanup(func() {
+		_ = services.StopAndAwaitTerminated(context.Background(), ring)
+	})
 
-			cfg := Config{
-				KVStore:           kv.Config{Mock: inmem},
-				HeartbeatTimeout:  1 * time.Minute,
-				ReplicationFactor: 3,
-				ExcludedZones:     flagext.StringSliceCSV(testData.excludedZones),
-			}
+	require.Equal(t, 0, ring.InstancesCount())
 
-			ring, err := New(cfg, "test", "test", log.NewNopLogger(), nil)
-			require.NoError(t, err)
-			require.NoError(t, services.StartAndAwaitRunning(context.Background(), ring))
-			t.Cleanup(func() {
-				_ = services.StopAndAwaitTerminated(context.Background(), ring)
-			})
+	lc1 := startLifecycler(t, cfg, 100*time.Millisecond, 1, 3)
+	test.Poll(t, 1*time.Second, 1, func() interface{} {
+		return ring.InstancesCount()
+	})
 
-			require.Equal(t, 0, ring.InstancesCount())
+	lc2 := startLifecycler(t, cfg, 100*time.Millisecond, 2, 3)
+	test.Poll(t, 1*time.Second, 2, func() interface{} {
+		return ring.InstancesCount()
+	})
 
-			// Start 1 lifecycler for each instance we want to register in the ring.
-			var lifecyclers []*Lifecycler
-			for instanceID := 1; instanceID <= numInstances; instanceID++ {
-				lifecyclers = append(lifecyclers, startLifecycler(t, cfg, 100*time.Millisecond, instanceID, numZones))
-			}
+	lc3 := startLifecycler(t, cfg, 100*time.Millisecond, 3, 3)
+	test.Poll(t, 1*time.Second, 3, func() interface{} {
+		return ring.InstancesCount()
+	})
 
-			// Ensure the ring client got updated.
-			test.Poll(t, 1*time.Second, testData.expectedInstances, func() interface{} {
-				return ring.InstancesCount()
-			})
+	// Sleep for a few seconds (ring timestamp resolution is 1 second, so to verify that ring is updated in the background,
+	// sleep for 2 seconds)
+	time.Sleep(2 * time.Second)
 
-			// Sleep for a few seconds (ring timestamp resolution is 1 second, so to verify that ring is updated in the background,
-			// sleep for 2 seconds)
-			time.Sleep(2 * time.Second)
+	rs, err := ring.GetAllHealthy(Read)
+	require.NoError(t, err)
 
-			rs, err := ring.GetAllHealthy(Read)
-			require.NoError(t, err)
-
-			now := time.Now()
-			for _, ing := range rs.Instances {
-				require.InDelta(t, now.UnixNano(), time.Unix(ing.Timestamp, 0).UnixNano(), float64(1500*time.Millisecond.Nanoseconds()))
-
-				// Ensure there's no instance in an excluded zone.
-				if len(testData.excludedZones) > 0 {
-					assert.False(t, util.StringsContain(testData.excludedZones, ing.Zone))
-				}
-			}
-
-			// Stop all lifecyclers.
-			for _, lc := range lifecyclers {
-				require.NoError(t, services.StopAndAwaitTerminated(context.Background(), lc))
-			}
-
-			// Ensure the ring client got updated.
-			test.Poll(t, 1*time.Second, 0, func() interface{} {
-				return ring.InstancesCount()
-			})
-		})
+	now := time.Now()
+	for _, ing := range rs.Instances {
+		require.InDelta(t, now.UnixNano(), time.Unix(ing.Timestamp, 0).UnixNano(), float64(1500*time.Millisecond.Nanoseconds()))
 	}
+
+	require.NoError(t, services.StopAndAwaitTerminated(context.Background(), lc2))
+	test.Poll(t, 1*time.Second, 2, func() interface{} {
+		return ring.InstancesCount()
+	})
+
+	require.NoError(t, services.StopAndAwaitTerminated(context.Background(), lc1))
+	test.Poll(t, 1*time.Second, 1, func() interface{} {
+		return ring.InstancesCount()
+	})
+
+	require.NoError(t, services.StopAndAwaitTerminated(context.Background(), lc3))
+	test.Poll(t, 1*time.Second, 0, func() interface{} {
+		return ring.InstancesCount()
+	})
 }
 
 func startLifecycler(t *testing.T, cfg Config, heartbeat time.Duration, lifecyclerID int, zones int) *Lifecycler {
@@ -2044,7 +2023,7 @@ func TestShuffleShardWithCaching(t *testing.T) {
 	inmem, closer := consul.NewInMemoryClientWithConfig(GetCodec(), consul.Config{
 		MaxCasRetries: 20,
 		CasRetryDelay: 500 * time.Millisecond,
-	}, log.NewNopLogger(), nil)
+	}, log.NewNopLogger())
 	t.Cleanup(func() { assert.NoError(t, closer.Close()) })
 
 	cfg := Config{

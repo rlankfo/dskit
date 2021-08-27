@@ -9,12 +9,12 @@ import (
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
+	"github.com/grafana/dskit/kv"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/grafana/dskit/kv"
-	"github.com/grafana/dskit/services"
-	dstime "github.com/grafana/dskit/time"
+	"github.com/cortexproject/cortex/pkg/util"
+	util_log "github.com/cortexproject/cortex/pkg/util/log"
 )
 
 type BasicLifecyclerDelegate interface {

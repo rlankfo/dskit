@@ -13,16 +13,13 @@ import (
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
+	"github.com/grafana/dskit/kv"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/grafana/dskit/kv"
-	shardUtil "github.com/grafana/dskit/ring/shard"
-	"github.com/grafana/dskit/ring/util"
-	"github.com/grafana/dskit/services"
-
-	"github.com/grafana/dskit/flagext"
-	dsmath "github.com/grafana/dskit/math"
+	"github.com/cortexproject/cortex/pkg/util"
+	"github.com/cortexproject/cortex/pkg/util/log"
+	util_math "github.com/cortexproject/cortex/pkg/util/math"
 )
 
 const (
@@ -214,8 +211,8 @@ func New(cfg Config, name, key string, logger log.Logger, reg prometheus.Registe
 	store, err := kv.NewClient(
 		cfg.KVStore,
 		codec,
-		kv.RegistererWithKVName(reg, name+"-ring"),
-		logger,
+		kv.RegistererWithKVName(prometheus.WrapRegistererWithPrefix("cortex_", reg), name+"-ring"),
+		log.Logger,
 	)
 	if err != nil {
 		return nil, err
