@@ -6,13 +6,14 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
-	"github.com/grafana/dskit/kv"
-	"github.com/grafana/dskit/kv/consul"
-	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/prometheus/client_golang/prometheus"
+	ptestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/cortexproject/cortex/pkg/util/test"
+	"github.com/grafana/dskit/kv"
+	"github.com/grafana/dskit/kv/consul"
+	"github.com/grafana/dskit/testutil"
 )
 
 const (
@@ -123,8 +124,8 @@ func TestBasicLifecycler_RegisterOnStart(t *testing.T) {
 			assert.Equal(t, PENDING, lifecycler.GetState())
 			assert.Empty(t, lifecycler.GetTokens())
 			assert.False(t, lifecycler.IsRegistered())
-			assert.Equal(t, float64(0), testutil.ToFloat64(lifecycler.metrics.tokensOwned))
-			assert.Equal(t, float64(cfg.NumTokens), testutil.ToFloat64(lifecycler.metrics.tokensToOwn))
+			assert.Equal(t, float64(0), ptestutil.ToFloat64(lifecycler.metrics.tokensOwned))
+			assert.Equal(t, float64(cfg.NumTokens), ptestutil.ToFloat64(lifecycler.metrics.tokensToOwn))
 			assert.Zero(t, lifecycler.GetRegisteredAt())
 
 			require.NoError(t, services.StartAndAwaitRunning(ctx, lifecycler))
@@ -133,8 +134,8 @@ func TestBasicLifecycler_RegisterOnStart(t *testing.T) {
 			assert.Equal(t, testData.registerState, lifecycler.GetState())
 			assert.Equal(t, testData.registerTokens, lifecycler.GetTokens())
 			assert.True(t, lifecycler.IsRegistered())
-			assert.Equal(t, float64(cfg.NumTokens), testutil.ToFloat64(lifecycler.metrics.tokensOwned))
-			assert.Equal(t, float64(cfg.NumTokens), testutil.ToFloat64(lifecycler.metrics.tokensToOwn))
+			assert.Equal(t, float64(cfg.NumTokens), ptestutil.ToFloat64(lifecycler.metrics.tokensOwned))
+			assert.Equal(t, float64(cfg.NumTokens), ptestutil.ToFloat64(lifecycler.metrics.tokensToOwn))
 
 			// Assert on the instance registered within the ring.
 			instanceDesc, ok := getInstanceFromStore(t, store, testInstanceID)
@@ -173,16 +174,16 @@ func TestBasicLifecycler_UnregisterOnStop(t *testing.T) {
 	assert.Equal(t, Tokens{1, 2, 3, 4, 5}, lifecycler.GetTokens())
 	assert.True(t, lifecycler.IsRegistered())
 	assert.NotZero(t, lifecycler.GetRegisteredAt())
-	assert.Equal(t, float64(cfg.NumTokens), testutil.ToFloat64(lifecycler.metrics.tokensOwned))
-	assert.Equal(t, float64(cfg.NumTokens), testutil.ToFloat64(lifecycler.metrics.tokensToOwn))
+	assert.Equal(t, float64(cfg.NumTokens), ptestutil.ToFloat64(lifecycler.metrics.tokensOwned))
+	assert.Equal(t, float64(cfg.NumTokens), ptestutil.ToFloat64(lifecycler.metrics.tokensToOwn))
 
 	require.NoError(t, services.StopAndAwaitTerminated(ctx, lifecycler))
 	assert.Equal(t, PENDING, lifecycler.GetState())
 	assert.Equal(t, Tokens{}, lifecycler.GetTokens())
 	assert.False(t, lifecycler.IsRegistered())
 	assert.Zero(t, lifecycler.GetRegisteredAt())
-	assert.Equal(t, float64(0), testutil.ToFloat64(lifecycler.metrics.tokensOwned))
-	assert.Equal(t, float64(0), testutil.ToFloat64(lifecycler.metrics.tokensToOwn))
+	assert.Equal(t, float64(0), ptestutil.ToFloat64(lifecycler.metrics.tokensOwned))
+	assert.Equal(t, float64(0), ptestutil.ToFloat64(lifecycler.metrics.tokensToOwn))
 
 	// Assert on the instance removed from the ring.
 	_, ok := getInstanceFromStore(t, store, testInstanceID)
@@ -203,14 +204,14 @@ func TestBasicLifecycler_HeartbeatWhileRunning(t *testing.T) {
 	desc, _ := getInstanceFromStore(t, store, testInstanceID)
 	initialTimestamp := desc.GetTimestamp()
 
-	test.Poll(t, time.Second, true, func() interface{} {
+	testutil.Poll(t, time.Second, true, func() interface{} {
 		desc, _ := getInstanceFromStore(t, store, testInstanceID)
 		currTimestamp := desc.GetTimestamp()
 
 		return currTimestamp > initialTimestamp
 	})
 
-	assert.Greater(t, testutil.ToFloat64(lifecycler.metrics.heartbeats), float64(0))
+	assert.Greater(t, ptestutil.ToFloat64(lifecycler.metrics.heartbeats), float64(0))
 }
 
 func TestBasicLifecycler_HeartbeatWhileStopping(t *testing.T) {
@@ -237,7 +238,7 @@ func TestBasicLifecycler_HeartbeatWhileStopping(t *testing.T) {
 		}))
 
 		// Wait until the timestamp has been updated.
-		test.Poll(t, time.Second, true, func() interface{} {
+		testutil.Poll(t, time.Second, true, func() interface{} {
 			desc, _ := getInstanceFromStore(t, store, testInstanceID)
 			currTimestamp := desc.GetTimestamp()
 
@@ -276,7 +277,7 @@ func TestBasicLifecycler_HeartbeatAfterBackendRest(t *testing.T) {
 		return NewDesc(), true, nil
 	}))
 
-	test.Poll(t, time.Second, true, func() interface{} {
+	testutil.Poll(t, time.Second, true, func() interface{} {
 		desc, ok := getInstanceFromStore(t, store, testInstanceID)
 		return ok &&
 			desc.GetTimestamp() > 0 &&
@@ -330,7 +331,7 @@ func TestBasicLifecycler_TokensObservePeriod(t *testing.T) {
 	// While the lifecycler is starting we poll the ring. As soon as the instance
 	// is registered, we remove some tokens to simulate how gossip memberlist
 	// reconciliation works in case of clashing tokens.
-	test.Poll(t, time.Second, true, func() interface{} {
+	testutil.Poll(t, time.Second, true, func() interface{} {
 		// Ensure the instance has been registered in the ring.
 		desc, ok := getInstanceFromStore(t, store, testInstanceID)
 		if !ok {
@@ -413,7 +414,7 @@ func prepareBasicLifecycler(t testing.TB, cfg BasicLifecyclerConfig) (*BasicLife
 func prepareBasicLifecyclerWithDelegate(t testing.TB, cfg BasicLifecyclerConfig, delegate BasicLifecyclerDelegate) (*BasicLifecycler, kv.Client, error) {
 	t.Helper()
 
-	store, closer := consul.NewInMemoryClient(GetCodec(), log.NewNopLogger())
+	store, closer := consul.NewInMemoryClient(GetCodec(), log.NewNopLogger(), prometheus.NewPedanticRegistry())
 	t.Cleanup(func() { assert.NoError(t, closer.Close()) })
 
 	lifecycler, err := NewBasicLifecycler(cfg, testRingName, testRingKey, store, delegate, log.NewNopLogger(), nil)

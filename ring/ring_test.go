@@ -12,14 +12,16 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
-	"github.com/go-kit/kit/log"
-	"github.com/grafana/dskit/kv"
-	"github.com/grafana/dskit/kv/consul"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/cortexproject/cortex/pkg/util"
-	"github.com/cortexproject/cortex/pkg/util/test"
+	"github.com/grafana/dskit/flagext"
+	"github.com/grafana/dskit/kv"
+	"github.com/grafana/dskit/kv/consul"
+	"github.com/grafana/dskit/services"
+	"github.com/grafana/dskit/stringutil"
+	"github.com/grafana/dskit/testutil"
 )
 
 const (
@@ -1107,7 +1109,7 @@ func TestRing_ShuffleShard_Shuffling(t *testing.T) {
 
 			numMatching := 0
 			for _, c := range currShard {
-				if util.StringsContain(otherShard, c) {
+				if stringutil.StringsContain(otherShard, c) {
 					numMatching++
 				}
 			}
@@ -1926,7 +1928,7 @@ func compareReplicationSets(first, second ReplicationSet) (added, removed []stri
 
 // This test verifies that ring is getting updates, even after extending check in the loop method.
 func TestRingUpdates(t *testing.T) {
-	inmem, closer := consul.NewInMemoryClient(GetCodec(), log.NewNopLogger())
+	inmem, closer := consul.NewInMemoryClient(GetCodec(), log.NewNopLogger(), prometheus.NewPedanticRegistry())
 	t.Cleanup(func() { assert.NoError(t, closer.Close()) })
 
 	cfg := Config{
@@ -1935,7 +1937,7 @@ func TestRingUpdates(t *testing.T) {
 		ReplicationFactor: 3,
 	}
 
-	ring, err := New(cfg, "test", "test", nil)
+	ring, err := New(cfg, "test", "test", nil, log.NewNopLogger())
 	require.NoError(t, err)
 	require.NoError(t, services.StartAndAwaitRunning(context.Background(), ring))
 	t.Cleanup(func() {
@@ -1945,17 +1947,17 @@ func TestRingUpdates(t *testing.T) {
 	require.Equal(t, 0, ring.InstancesCount())
 
 	lc1 := startLifecycler(t, cfg, 100*time.Millisecond, 1, 3)
-	test.Poll(t, 1*time.Second, 1, func() interface{} {
+	testutil.Poll(t, 1*time.Second, 1, func() interface{} {
 		return ring.InstancesCount()
 	})
 
 	lc2 := startLifecycler(t, cfg, 100*time.Millisecond, 2, 3)
-	test.Poll(t, 1*time.Second, 2, func() interface{} {
+	testutil.Poll(t, 1*time.Second, 2, func() interface{} {
 		return ring.InstancesCount()
 	})
 
 	lc3 := startLifecycler(t, cfg, 100*time.Millisecond, 3, 3)
-	test.Poll(t, 1*time.Second, 3, func() interface{} {
+	testutil.Poll(t, 1*time.Second, 3, func() interface{} {
 		return ring.InstancesCount()
 	})
 
@@ -1972,22 +1974,24 @@ func TestRingUpdates(t *testing.T) {
 	}
 
 	require.NoError(t, services.StopAndAwaitTerminated(context.Background(), lc2))
-	test.Poll(t, 1*time.Second, 2, func() interface{} {
+	testutil.Poll(t, 1*time.Second, 2, func() interface{} {
 		return ring.InstancesCount()
 	})
 
 	require.NoError(t, services.StopAndAwaitTerminated(context.Background(), lc1))
-	test.Poll(t, 1*time.Second, 1, func() interface{} {
+	testutil.Poll(t, 1*time.Second, 1, func() interface{} {
 		return ring.InstancesCount()
 	})
 
 	require.NoError(t, services.StopAndAwaitTerminated(context.Background(), lc3))
-	test.Poll(t, 1*time.Second, 0, func() interface{} {
+	testutil.Poll(t, 1*time.Second, 0, func() interface{} {
 		return ring.InstancesCount()
 	})
 }
 
 func startLifecycler(t *testing.T, cfg Config, heartbeat time.Duration, lifecyclerID int, zones int) *Lifecycler {
+	t.Helper()
+
 	lcCfg := LifecyclerConfig{
 		RingConfig:           cfg,
 		NumTokens:            16,
@@ -1998,9 +2002,10 @@ func startLifecycler(t *testing.T, cfg Config, heartbeat time.Duration, lifecycl
 		Addr:                 fmt.Sprintf("addr-%d", lifecyclerID),
 		ID:                   fmt.Sprintf("instance-%d", lifecyclerID),
 		UnregisterOnShutdown: true,
+		logger:               log.NewNopLogger(),
 	}
 
-	lc, err := NewLifecycler(lcCfg, &noopFlushTransferer{}, "test", "test", false, log.NewNopLogger(), nil)
+	lc, err := NewLifecycler(lcCfg, &noopFlushTransferer{}, "test", "test", false, nil, log.NewNopLogger())
 	require.NoError(t, err)
 
 	lc.AddListener(services.NewListener(nil, nil, nil, nil, func(from services.State, failure error) {
@@ -2023,7 +2028,7 @@ func TestShuffleShardWithCaching(t *testing.T) {
 	inmem, closer := consul.NewInMemoryClientWithConfig(GetCodec(), consul.Config{
 		MaxCasRetries: 20,
 		CasRetryDelay: 500 * time.Millisecond,
-	}, log.NewNopLogger())
+	}, log.NewNopLogger(), prometheus.NewPedanticRegistry())
 	t.Cleanup(func() { assert.NoError(t, closer.Close()) })
 
 	cfg := Config{
@@ -2033,7 +2038,7 @@ func TestShuffleShardWithCaching(t *testing.T) {
 		ZoneAwarenessEnabled: true,
 	}
 
-	ring, err := New(cfg, "test", "test", log.NewNopLogger(), nil)
+	ring, err := New(cfg, "test", "test", nil, log.NewNopLogger())
 	require.NoError(t, err)
 	require.NoError(t, services.StartAndAwaitRunning(context.Background(), ring))
 	t.Cleanup(func() {
@@ -2052,7 +2057,7 @@ func TestShuffleShardWithCaching(t *testing.T) {
 	}
 
 	// Wait until all instances in the ring are ACTIVE.
-	test.Poll(t, 5*time.Second, numLifecyclers, func() interface{} {
+	testutil.Poll(t, 5*time.Second, numLifecyclers, func() interface{} {
 		active := 0
 		rs, _ := ring.GetReplicationSetForOperation(Read)
 		for _, ing := range rs.Instances {
@@ -2097,7 +2102,7 @@ func TestShuffleShardWithCaching(t *testing.T) {
 		require.NoError(t, services.StopAndAwaitTerminated(context.Background(), lcs[i]))
 	}
 
-	test.Poll(t, 5*time.Second, numLifecyclers-zones, func() interface{} {
+	testutil.Poll(t, 5*time.Second, numLifecyclers-zones, func() interface{} {
 		return ring.InstancesCount()
 	})
 
@@ -2126,7 +2131,7 @@ func TestShuffleShardWithCaching(t *testing.T) {
 
 // User shuffle shard token.
 func userToken(user, zone string, skip int) uint32 {
-	r := rand.New(rand.NewSource(shard.ShuffleShardSeed(user, zone)))
+	r := rand.New(rand.NewSource(shuffleShardSeed(user, zone)))
 
 	for ; skip > 0; skip-- {
 		_ = r.Uint32()

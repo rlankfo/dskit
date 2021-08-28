@@ -13,13 +13,12 @@ import (
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
-	"github.com/grafana/dskit/kv"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/cortexproject/cortex/pkg/util"
-	"github.com/cortexproject/cortex/pkg/util/log"
-	util_math "github.com/cortexproject/cortex/pkg/util/math"
+	"github.com/grafana/dskit/kv"
+	"github.com/grafana/dskit/services"
+	"github.com/grafana/dskit/stringutil"
 )
 
 const (
@@ -166,6 +165,7 @@ type Ring struct {
 
 	key      string
 	cfg      Config
+	logger   log.Logger
 	KVClient kv.Client
 	strategy ReplicationStrategy
 
@@ -205,14 +205,14 @@ type subringCacheKey struct {
 }
 
 // New creates a new Ring. Being a service, Ring needs to be started to do anything.
-func New(cfg Config, name, key string, logger log.Logger, reg prometheus.Registerer) (*Ring, error) {
+func New(cfg Config, name, key string, reg prometheus.Registerer, logger log.Logger) (*Ring, error) {
 	codec := GetCodec()
 	// Suffix all client names with "-ring" to denote this kv client is used by the ring
 	store, err := kv.NewClient(
 		cfg.KVStore,
 		codec,
 		kv.RegistererWithKVName(prometheus.WrapRegistererWithPrefix("cortex_", reg), name+"-ring"),
-		log.Logger,
+		logger,
 	)
 	if err != nil {
 		return nil, err
@@ -229,6 +229,7 @@ func NewWithStoreClientAndStrategy(cfg Config, name, key string, store kv.Client
 	r := &Ring{
 		key:                  key,
 		cfg:                  cfg,
+		logger:               logger,
 		KVClient:             store,
 		strategy:             strategy,
 		ringDesc:             &Desc{},
@@ -377,13 +378,13 @@ func (r *Ring) Get(key uint32, op Operation, bufDescs []InstanceDesc, bufHosts, 
 		}
 
 		// We want n *distinct* instances && distinct zones.
-		if util.StringsContain(distinctHosts, info.InstanceID) {
+		if stringutil.StringsContain(distinctHosts, info.InstanceID) {
 			continue
 		}
 
 		// Ignore if the instances don't have a zone set.
 		if r.cfg.ZoneAwarenessEnabled && info.Zone != "" {
-			if util.StringsContain(distinctZones, info.Zone) {
+			if stringutil.StringsContain(distinctZones, info.Zone) {
 				continue
 			}
 		}
@@ -469,7 +470,10 @@ func (r *Ring) GetReplicationSetForOperation(op Operation) (ReplicationSet, erro
 		// Given data is replicated to RF different zones, we can tolerate a number of
 		// RF/2 failing zones. However, we need to protect from the case the ring currently
 		// contains instances in a number of zones < RF.
-		numReplicatedZones := dsmath.Min(len(r.ringZones), r.cfg.ReplicationFactor)
+		numReplicatedZones := len(r.ringZones)
+		if r.cfg.ReplicationFactor < numReplicatedZones {
+			numReplicatedZones = r.cfg.ReplicationFactor
+		}
 		minSuccessZones := (numReplicatedZones / 2) + 1
 		maxUnavailableZones = minSuccessZones - 1
 
@@ -686,7 +690,7 @@ func (r *Ring) shuffleShard(identifier string, size int, lookbackPeriod time.Dur
 	var actualZones []string
 
 	if r.cfg.ZoneAwarenessEnabled {
-		numInstancesPerZone = shardUtil.ShuffleShardExpectedInstancesPerZone(size, len(r.ringZones))
+		numInstancesPerZone = shuffleShardExpectedInstancesPerZone(size, len(r.ringZones))
 		actualZones = r.ringZones
 	} else {
 		numInstancesPerZone = size
@@ -711,7 +715,7 @@ func (r *Ring) shuffleShard(identifier string, size int, lookbackPeriod time.Dur
 		// Since we consider each zone like an independent ring, we have to use dedicated
 		// pseudo-random generator for each zone, in order to guarantee the "consistency"
 		// property when the shard size changes or a new zone is added.
-		random := rand.New(rand.NewSource(shardUtil.ShuffleShardSeed(identifier, zone)))
+		random := rand.New(rand.NewSource(shuffleShardSeed(identifier, zone)))
 
 		// To select one more instance while guaranteeing the "consistency" property,
 		// we do pick a random value from the generator and resolve uniqueness collisions
