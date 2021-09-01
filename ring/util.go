@@ -13,7 +13,6 @@ import (
 	"github.com/go-kit/log/level"
 
 	"github.com/grafana/dskit/backoff"
-	"github.com/grafana/dskit/netutil"
 )
 
 // GenerateTokens make numTokens unique random tokens, none of which clash
@@ -56,7 +55,7 @@ func GetInstanceAddr(configAddr string, netInterfaces []string, logger log.Logge
 		return configAddr, nil
 	}
 
-	addr, err := netutil.GetFirstAddressOf(netInterfaces, logger)
+	addr, err := getFirstAddressOf(netInterfaces, logger)
 	if err != nil {
 		return "", err
 	}

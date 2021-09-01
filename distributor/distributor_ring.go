@@ -5,12 +5,12 @@ import (
 	"os"
 	"time"
 
+	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
+
 	"github.com/grafana/dskit/flagext"
 	"github.com/grafana/dskit/kv"
-
-	"github.com/cortexproject/cortex/pkg/ring"
-	util_log "github.com/cortexproject/cortex/pkg/util/log"
+	"github.com/grafana/dskit/ring"
 )
 
 // RingConfig masks the ring lifecycler config which contains
@@ -21,6 +21,7 @@ type RingConfig struct {
 	KVStore          kv.Config     `yaml:"kvstore"`
 	HeartbeatPeriod  time.Duration `yaml:"heartbeat_period"`
 	HeartbeatTimeout time.Duration `yaml:"heartbeat_timeout"`
+	Logger           log.Logger
 
 	// Instance details
 	InstanceID             string   `yaml:"instance_id" doc:"hidden"`
@@ -32,11 +33,11 @@ type RingConfig struct {
 	ListenPort int `yaml:"-"`
 }
 
-// RegisterFlags adds the flags required to config this to the given FlagSet
+// RegisterFlags adds the flags required to config this to the given FlagSet.
 func (cfg *RingConfig) RegisterFlags(f *flag.FlagSet) {
 	hostname, err := os.Hostname()
 	if err != nil {
-		level.Error(util_log.Logger).Log("msg", "failed to get hostname", "err", err)
+		level.Error(cfg.Logger).Log("msg", "failed to get hostname", "err", err)
 		os.Exit(1)
 	}
 

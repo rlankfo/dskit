@@ -12,16 +12,16 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/grafana/dskit/flagext"
 	"github.com/grafana/dskit/kv"
 	"github.com/grafana/dskit/kv/consul"
+	"github.com/grafana/dskit/ring/shard"
+	"github.com/grafana/dskit/ring/util"
 	"github.com/grafana/dskit/services"
-	"github.com/grafana/dskit/stringutil"
-	"github.com/grafana/dskit/testutil"
+	"github.com/grafana/dskit/test"
 )
 
 const (
@@ -1109,7 +1109,7 @@ func TestRing_ShuffleShard_Shuffling(t *testing.T) {
 
 			numMatching := 0
 			for _, c := range currShard {
-				if stringutil.StringsContain(otherShard, c) {
+				if util.StringsContain(otherShard, c) {
 					numMatching++
 				}
 			}
@@ -1928,70 +1928,87 @@ func compareReplicationSets(first, second ReplicationSet) (added, removed []stri
 
 // This test verifies that ring is getting updates, even after extending check in the loop method.
 func TestRingUpdates(t *testing.T) {
-	inmem, closer := consul.NewInMemoryClient(GetCodec(), log.NewNopLogger(), prometheus.NewPedanticRegistry())
-	t.Cleanup(func() { assert.NoError(t, closer.Close()) })
+	const (
+		numInstances = 3
+		numZones     = 3
+	)
 
-	cfg := Config{
-		KVStore:           kv.Config{Mock: inmem},
-		HeartbeatTimeout:  1 * time.Minute,
-		ReplicationFactor: 3,
+	tests := map[string]struct {
+		excludedZones     []string
+		expectedInstances int
+	}{
+		"without excluded zones": {
+			expectedInstances: 3,
+		},
+		"with excluded zones": {
+			excludedZones:     []string{"zone-0"},
+			expectedInstances: 2,
+		},
 	}
 
-	ring, err := New(cfg, "test", "test", nil, log.NewNopLogger())
-	require.NoError(t, err)
-	require.NoError(t, services.StartAndAwaitRunning(context.Background(), ring))
-	t.Cleanup(func() {
-		_ = services.StopAndAwaitTerminated(context.Background(), ring)
-	})
+	for testName, testData := range tests {
+		t.Run(testName, func(t *testing.T) {
+			inmem, closer := consul.NewInMemoryClient(GetCodec(), log.NewNopLogger(), nil)
+			t.Cleanup(func() { assert.NoError(t, closer.Close()) })
 
-	require.Equal(t, 0, ring.InstancesCount())
+			cfg := Config{
+				KVStore:           kv.Config{Mock: inmem},
+				HeartbeatTimeout:  1 * time.Minute,
+				ReplicationFactor: 3,
+				ExcludedZones:     flagext.StringSliceCSV(testData.excludedZones),
+			}
 
-	lc1 := startLifecycler(t, cfg, 100*time.Millisecond, 1, 3)
-	testutil.Poll(t, 1*time.Second, 1, func() interface{} {
-		return ring.InstancesCount()
-	})
+			ring, err := New(cfg, "test", "test", log.NewNopLogger(), nil)
+			require.NoError(t, err)
+			require.NoError(t, services.StartAndAwaitRunning(context.Background(), ring))
+			t.Cleanup(func() {
+				_ = services.StopAndAwaitTerminated(context.Background(), ring)
+			})
 
-	lc2 := startLifecycler(t, cfg, 100*time.Millisecond, 2, 3)
-	testutil.Poll(t, 1*time.Second, 2, func() interface{} {
-		return ring.InstancesCount()
-	})
+			require.Equal(t, 0, ring.InstancesCount())
 
-	lc3 := startLifecycler(t, cfg, 100*time.Millisecond, 3, 3)
-	testutil.Poll(t, 1*time.Second, 3, func() interface{} {
-		return ring.InstancesCount()
-	})
+			// Start 1 lifecycler for each instance we want to register in the ring.
+			var lifecyclers []*Lifecycler
+			for instanceID := 1; instanceID <= numInstances; instanceID++ {
+				lifecyclers = append(lifecyclers, startLifecycler(t, cfg, 100*time.Millisecond, instanceID, numZones))
+			}
 
-	// Sleep for a few seconds (ring timestamp resolution is 1 second, so to verify that ring is updated in the background,
-	// sleep for 2 seconds)
-	time.Sleep(2 * time.Second)
+			// Ensure the ring client got updated.
+			test.Poll(t, 1*time.Second, testData.expectedInstances, func() interface{} {
+				return ring.InstancesCount()
+			})
 
-	rs, err := ring.GetAllHealthy(Read)
-	require.NoError(t, err)
+			// Sleep for a few seconds (ring timestamp resolution is 1 second, so to verify that ring is updated in the background,
+			// sleep for 2 seconds)
+			time.Sleep(2 * time.Second)
 
-	now := time.Now()
-	for _, ing := range rs.Instances {
-		require.InDelta(t, now.UnixNano(), time.Unix(ing.Timestamp, 0).UnixNano(), float64(1500*time.Millisecond.Nanoseconds()))
+			rs, err := ring.GetAllHealthy(Read)
+			require.NoError(t, err)
+
+			now := time.Now()
+			for _, ing := range rs.Instances {
+				require.InDelta(t, now.UnixNano(), time.Unix(ing.Timestamp, 0).UnixNano(), float64(1500*time.Millisecond.Nanoseconds()))
+
+				// Ensure there's no instance in an excluded zone.
+				if len(testData.excludedZones) > 0 {
+					assert.False(t, util.StringsContain(testData.excludedZones, ing.Zone))
+				}
+			}
+
+			// Stop all lifecyclers.
+			for _, lc := range lifecyclers {
+				require.NoError(t, services.StopAndAwaitTerminated(context.Background(), lc))
+			}
+
+			// Ensure the ring client got updated.
+			test.Poll(t, 1*time.Second, 0, func() interface{} {
+				return ring.InstancesCount()
+			})
+		})
 	}
-
-	require.NoError(t, services.StopAndAwaitTerminated(context.Background(), lc2))
-	testutil.Poll(t, 1*time.Second, 2, func() interface{} {
-		return ring.InstancesCount()
-	})
-
-	require.NoError(t, services.StopAndAwaitTerminated(context.Background(), lc1))
-	testutil.Poll(t, 1*time.Second, 1, func() interface{} {
-		return ring.InstancesCount()
-	})
-
-	require.NoError(t, services.StopAndAwaitTerminated(context.Background(), lc3))
-	testutil.Poll(t, 1*time.Second, 0, func() interface{} {
-		return ring.InstancesCount()
-	})
 }
 
 func startLifecycler(t *testing.T, cfg Config, heartbeat time.Duration, lifecyclerID int, zones int) *Lifecycler {
-	t.Helper()
-
 	lcCfg := LifecyclerConfig{
 		RingConfig:           cfg,
 		NumTokens:            16,
@@ -2002,10 +2019,9 @@ func startLifecycler(t *testing.T, cfg Config, heartbeat time.Duration, lifecycl
 		Addr:                 fmt.Sprintf("addr-%d", lifecyclerID),
 		ID:                   fmt.Sprintf("instance-%d", lifecyclerID),
 		UnregisterOnShutdown: true,
-		logger:               log.NewNopLogger(),
 	}
 
-	lc, err := NewLifecycler(lcCfg, &noopFlushTransferer{}, "test", "test", false, nil, log.NewNopLogger())
+	lc, err := NewLifecycler(lcCfg, &noopFlushTransferer{}, "test", "test", false, log.NewNopLogger(), nil)
 	require.NoError(t, err)
 
 	lc.AddListener(services.NewListener(nil, nil, nil, nil, func(from services.State, failure error) {
@@ -2028,7 +2044,7 @@ func TestShuffleShardWithCaching(t *testing.T) {
 	inmem, closer := consul.NewInMemoryClientWithConfig(GetCodec(), consul.Config{
 		MaxCasRetries: 20,
 		CasRetryDelay: 500 * time.Millisecond,
-	}, log.NewNopLogger(), prometheus.NewPedanticRegistry())
+	}, log.NewNopLogger(), nil)
 	t.Cleanup(func() { assert.NoError(t, closer.Close()) })
 
 	cfg := Config{
@@ -2038,7 +2054,7 @@ func TestShuffleShardWithCaching(t *testing.T) {
 		ZoneAwarenessEnabled: true,
 	}
 
-	ring, err := New(cfg, "test", "test", nil, log.NewNopLogger())
+	ring, err := New(cfg, "test", "test", log.NewNopLogger(), nil)
 	require.NoError(t, err)
 	require.NoError(t, services.StartAndAwaitRunning(context.Background(), ring))
 	t.Cleanup(func() {
@@ -2057,7 +2073,7 @@ func TestShuffleShardWithCaching(t *testing.T) {
 	}
 
 	// Wait until all instances in the ring are ACTIVE.
-	testutil.Poll(t, 5*time.Second, numLifecyclers, func() interface{} {
+	test.Poll(t, 5*time.Second, numLifecyclers, func() interface{} {
 		active := 0
 		rs, _ := ring.GetReplicationSetForOperation(Read)
 		for _, ing := range rs.Instances {
@@ -2102,7 +2118,7 @@ func TestShuffleShardWithCaching(t *testing.T) {
 		require.NoError(t, services.StopAndAwaitTerminated(context.Background(), lcs[i]))
 	}
 
-	testutil.Poll(t, 5*time.Second, numLifecyclers-zones, func() interface{} {
+	test.Poll(t, 5*time.Second, numLifecyclers-zones, func() interface{} {
 		return ring.InstancesCount()
 	})
 
@@ -2131,7 +2147,7 @@ func TestShuffleShardWithCaching(t *testing.T) {
 
 // User shuffle shard token.
 func userToken(user, zone string, skip int) uint32 {
-	r := rand.New(rand.NewSource(shuffleShardSeed(user, zone)))
+	r := rand.New(rand.NewSource(shard.ShuffleShardSeed(user, zone)))
 
 	for ; skip > 0; skip-- {
 		_ = r.Uint32()

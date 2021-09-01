@@ -8,12 +8,13 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
-	ptestutil "github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/grafana/dskit/concurrency"
 	"github.com/grafana/dskit/services"
-	"github.com/grafana/dskit/testutil"
+	"github.com/grafana/dskit/test"
 )
 
 func TestLeaveOnStoppingDelegate(t *testing.T) {
@@ -51,7 +52,7 @@ func TestTokensPersistencyDelegate_ShouldSkipTokensLoadingIfFileDoesNotExist(t *
 		},
 	}
 
-	logs := &syncBuffer{}
+	logs := &concurrency.SyncBuffer{}
 	logger := log.NewLogfmtLogger(logs)
 	persistencyDelegate := NewTokensPersistencyDelegate(tokensFile.Name(), ACTIVE, testDelegate, logger)
 
@@ -287,8 +288,8 @@ func TestAutoForgetDelegate(t *testing.T) {
 			defer services.StopAndAwaitTerminated(ctx, lifecycler) //nolint:errcheck
 
 			// Wait until an heartbeat has been sent.
-			testutil.Poll(t, time.Second, true, func() interface{} {
-				return ptestutil.ToFloat64(lifecycler.metrics.heartbeats) > 0
+			test.Poll(t, time.Second, true, func() interface{} {
+				return testutil.ToFloat64(lifecycler.metrics.heartbeats) > 0
 			})
 
 			// Read back the ring status from the store.
