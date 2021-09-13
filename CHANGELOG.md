@@ -8,6 +8,7 @@
 * [CHANGE] Remove `cortex_` prefix for metrics registered in the ring. #46
 * [CHANGE] Rename `kv/kvtls` to `crypto/tls`. #39
 * [CHANGE] spanlogger: Take interface implementation for extracting tenant ID. #59
+* [CHANGE] grpcclient: Make ping time and timeout into configuration parameters. #56
 * [ENHANCEMENT] Add middleware package. #38
 * [ENHANCEMENT] Add the ring package #45
 * [ENHANCEMENT] Add limiter package. #41

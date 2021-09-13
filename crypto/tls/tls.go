@@ -72,10 +72,17 @@ func (cfg *ClientConfig) GetTLSConfig() (*tls.Config, error) {
 	return config, nil
 }
 
-// GetGRPCDialOptions creates GRPC DialOptions for TLS
+// WithInsecure wraps grpc.WithInsecure.
+//
+// Stubbable for tests.
+var WithInsecure = func() grpc.DialOption {
+	return grpc.WithInsecure()
+}
+
+// GetGRPCDialOptions creates GRPC DialOptions for TLS.
 func (cfg *ClientConfig) GetGRPCDialOptions(enabled bool) ([]grpc.DialOption, error) {
 	if !enabled {
-		return []grpc.DialOption{grpc.WithInsecure()}, nil
+		return []grpc.DialOption{WithInsecure()}, nil
 	}
 
 	tlsConfig, err := cfg.GetTLSConfig()
