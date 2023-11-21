@@ -558,3 +558,8 @@ func (c *memcachedClient) resolveAddrs() error {
 
 	return c.selector.SetServers(servers...)
 }
+
+func NewMemcachedClient(logger log.Logger, name string, config MemcachedClientConfig, reg prometheus.Registerer) (*memcachedClient, error) {
+	c, err := NewMemcachedClientWithConfig(logger, name, config, reg)
+	return c.(*memcachedClient), err
+}
